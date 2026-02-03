@@ -3,12 +3,14 @@ import asyncio
 import os
 import sys
 import time
+import csv
+from datetime import datetime
 from typing import Annotated, Sequence, List, TypedDict, Union, Optional
 
 from dotenv import load_dotenv
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -22,8 +24,35 @@ browser: Union[Browser, None] = None
 page: Union[Page, None] = None
 
 # --- CONFIGURATION ---
-# 5s pause to prevent "429 Rate Limit" crashes
-PACING_DELAY = 5
+PACING_DELAY = 5  # Seconds to wait between calls (Safety for Free Tier)
+
+# --- 0. Power BI Logger ---
+
+def log_to_csv(url, task, summary_text, status):
+    """Saves run details to a CSV file for Power BI analysis."""
+    file_name = "agent_history.csv"
+    file_exists = os.path.isfile(file_name)
+    
+    try:
+        with open(file_name, mode='a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            
+            # Write header only if the file is new
+            if not file_exists:
+                writer.writerow(["Timestamp", "Target URL", "Task", "Summary Length", "Status", "Full Report"])
+            
+            # Write the data row
+            writer.writerow([
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                url,
+                task,
+                len(summary_text),
+                status,
+                summary_text[:5000] # Truncate slightly to keep CSV size manageable
+            ])
+        print(f">> Power BI Data: Logged to '{file_name}'")
+    except Exception as e:
+        print(f">> Warning: CSV Logging failed: {e}")
 
 # --- 1. Data Models ---
 
@@ -41,7 +70,7 @@ class AgentState(TypedDict):
 # --- 2. Smart Retry Wrapper ---
 
 async def call_llm_with_retry(llm_func, *args, **kwargs):
-    """Calls LLM with auto-retry AND auto-pacing."""
+    """Calls LLM with auto-retry, auto-pacing, and clean error handling."""
     
     print(f"   (Pacing for {PACING_DELAY}s...)")
     await asyncio.sleep(PACING_DELAY)
@@ -52,12 +81,23 @@ async def call_llm_with_retry(llm_func, *args, **kwargs):
             return await llm_func(*args, **kwargs)
         except Exception as e:
             error_msg = str(e)
+            
             if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
                 wait_time = 30 * (attempt + 1)
                 print(f"\n!!! Rate Limit Hit. Cooling down for {wait_time}s... !!!")
                 await asyncio.sleep(wait_time)
-            else:
-                raise e 
+                continue
+            
+            if "PERMISSION_DENIED" in error_msg:
+                print("\n!!! CRITICAL: API Key Invalid or Leaked. Check .env !!!")
+                return None
+
+            if "ValidationError" in error_msg or "validation error" in error_msg:
+                print(f"\n   [Attempt {attempt+1}] Model output parsing failed. Retrying...")
+                continue
+
+            print(f"   [Attempt {attempt+1}] Unexpected error: {e}")
+            
     print("!!! Max retries exceeded. Moving on.")
     return None
 
@@ -83,7 +123,10 @@ async def navigate_url(url: str) -> str:
     global page
     print(f'>> Navigating: {url}')
     if page:
-        await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+        try:
+            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+        except Exception as e:
+            print(f">> Navigation warning: {e}")
     return "Done"
 
 @tool
@@ -124,7 +167,11 @@ async def scroll_down() -> str:
 
 # --- 4. Logic Nodes ---
 
-llm = ChatGoogleGenerativeAI(model='gemini-flash-latest', temperature=0)
+llm = ChatGoogleGenerativeAI(
+    model='gemini-flash-latest', 
+    temperature=0,
+    stop=["\n\n\n\n\n"] 
+)
 
 async def init_node(state: AgentState) -> AgentState:
     target_url = state.get("url") or "https://en.wikipedia.org/wiki/Large_language_model"
@@ -142,8 +189,6 @@ async def analyze_node(state: AgentState) -> AgentState:
     task = state.get("task")
     current_scrolls = len(state.get("summaries", []))
     
-    # --- AGGRESSIVE PROMPT ---
-    # We explicitly tell the AI it CANNOT stop early.
     prompt_text = f"""
     You are a thorough researcher.
     USER TASK: "{task}"
@@ -166,28 +211,23 @@ async def analyze_node(state: AgentState) -> AgentState:
         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{context_data['image']}"}}
     ])
 
-    try:
-        structured_llm = llm.with_structured_output(PageAnalysis)
-        # Use auto-paced retry
-        result = await call_llm_with_retry(structured_llm.ainvoke, [msg])
+    structured_llm = llm.with_structured_output(PageAnalysis)
+    result = await call_llm_with_retry(structured_llm.ainvoke, [msg])
 
-        if result:
-            print(f"   Summary: {result.summary[:60]}...")
-            print(f"   AI Decision: {'SCROLLING' if result.should_scroll else 'STOPPING'}")
-            
-            new_summaries = state.get("summaries", []) + [str(result.summary)]
-            status = "SCROLL_REQUIRED" if result.should_scroll else "DONE"
-            
-            return {
-                **state,
-                "summaries": new_summaries,
-                "current_context": status
-            }
-        else:
-            return {**state, "current_context": "DONE"}
-            
-    except Exception as e:
-        print(f"   Analysis Failed: {e}")
+    if result:
+        print(f"   Summary: {result.summary[:60]}...")
+        print(f"   AI Decision: {'SCROLLING' if result.should_scroll else 'STOPPING'}")
+        
+        new_summaries = state.get("summaries", []) + [str(result.summary)]
+        status = "SCROLL_REQUIRED" if result.should_scroll else "DONE"
+        
+        return {
+            **state,
+            "summaries": new_summaries,
+            "current_context": status
+        }
+    else:
+        print(">> Analysis gave up. Moving to report generation.")
         return {**state, "current_context": "DONE"}
 
 async def scroll_node(state: AgentState) -> AgentState:
@@ -195,7 +235,7 @@ async def scroll_node(state: AgentState) -> AgentState:
     return state
 
 async def aggregate_node(state: AgentState) -> AgentState:
-    print(">> Generating Final Smart Report")
+    print(">> Generating Final Clean Report")
     summaries = state.get("summaries", [])
     task = state.get("task")
     
@@ -204,25 +244,47 @@ async def aggregate_node(state: AgentState) -> AgentState:
     
     if not combined_text: combined_text = "No content gathered."
 
+    # --- FAIL-SAFE: Save Raw Notes ---
+    try:
+        with open("raw_notes_backup.txt", "w", encoding="utf-8") as f:
+            f.write(f"--- RAW NOTES for: {task} ---\n\n")
+            f.write(combined_text)
+        print(">> (Safety) Saved 'raw_notes_backup.txt'.")
+    except: pass
+
+    # --- POWER BI LOGGING ---
+    log_to_csv(
+        url=state.get("url"),
+        task=task,
+        summary_text=combined_text,
+        status="Success"
+    )
+
+    # --- STRICT TEXT-ONLY PROMPT ---
     prompt = f"""
-    You are a professional report writer. 
-    Task: "{task}"
+    You are a professional editor. Your goal is to produce a clean, organized text report.
     
-    Compile the following notes into a coherent, well-structured markdown report. 
-    Eliminate duplicate information. 
+    TASK: "{task}"
+    
+    INSTRUCTIONS:
+    1. Read the notes below.
+    2. Write a final report in standard Markdown format (Headings, Paragraphs, Bullet points).
+    3. STRICTLY FORBIDDEN: Do not output JSON, dictionaries, objects, or code blocks.
+    4. Do not include metadata like "Summary:" or braces {{ }}.
+    5. Just give the clear, readable content.
     
     NOTES:
     {combined_text}
     """
     
-    try:
-        response = await call_llm_with_retry(llm.ainvoke, prompt)
-        if response:
-            with open("report.md", "w", encoding="utf-8") as f:
-                f.write(str(response.content))
-            print(">> Saved report.md")
-    except Exception as e:
-        print(f"Aggregation failed: {e}")
+    response = await call_llm_with_retry(llm.ainvoke, prompt)
+    
+    if response:
+        with open("report.md", "w", encoding="utf-8") as f:
+            f.write(str(response.content))
+        print(">> SUCCESS: Saved clean 'report.md'")
+    else:
+        print(">> Failed to generate final report.")
     
     return state
 
@@ -233,18 +295,14 @@ def router(state: AgentState) -> str:
     summaries = state.get("summaries", [])
     scroll_count = len(summaries)
     
-    # 1. Safety Limit (7 scrolls max)
     if scroll_count >= 7:
         print(">> Limit reached (7). Finishing.")
         return "aggregate"
     
-    # 2. FORCE SCROLL RULE: Always scroll at least 1 time
-    # This prevents the AI from stopping at the page header.
     if scroll_count < 1:
         print(">> Force Scroll (Rule: Minimum 1 Scroll)")
         return "scroll"
     
-    # 3. AI Decision
     if status == "SCROLL_REQUIRED":
         return "scroll"
     
@@ -268,7 +326,7 @@ workflow.add_edge("aggregate", END)
 app = workflow.compile()
 
 async def run_interactive():
-    print("\n=== AUTO-PACED AI Browser Agent ===")
+    print("\n=== AUTO-PACED AI Browser Agent (Power BI Ready) ===")
     user_url = input("1. Enter URL: ").strip()
     if not user_url: user_url = "https://en.wikipedia.org/wiki/Large_language_model"
     
