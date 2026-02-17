@@ -1,4 +1,59 @@
-# 🤖 Browser Autofy: Intelligent AI Web Agent
+# 🤖  Browsify — Intelligent Web Research AI Agent
+
+<p align="center">
+  <img src="https://user-images.githubusercontent.com/your_username/project_screenshot.png" alt="Project screenshot" width="700">
+</p>
+
+[![License](https://img.shields.io/github/license/nick2726/browsify)](https://github.com/nick2726/browsify/blob/main/LICENSE)
+[![Made with Python](https://img.shields.io/badge/Python-%233776AB.svg?style=flat&logo=python&logoColor=white)](#tech-stack)
+[![Stars](https://img.shields.io/github/stars/nick2726/browsify?style=social)](https://github.com/nick2726/browsify/stargazers)
+
+---
+
+## 🧠 What is Browsify?
+
+**Browsify** is an autonomous web research agent that uses AI + browser automation to intelligently explore websites, extract structured data, and generate human-readable reports.
+
+Unlike basic scrapers, Browsify:
+
+✔ reads pages like a human  
+✔ scrolls dynamically  
+✔ handles rate-limits & page logic  
+✔ produces structured markdown reports  
+
+---
+
+## 🧩 Features
+
+✨ **Hybrid Vision & DOM Parsing** — combines screenshots with raw HTML for better context  
+📄 **Autonomous Decision Logic** — intelligently decides what to scroll or extract  
+📊 **Structured Reports** — outputs context-rich markdown notes  
+⚙️ **Easy Python Setup** — minimal dependencies  
+
+---
+
+## 🛠️ Tech Stack
+
+| Technology | Purpose |
+|------------|---------|
+| Python | Core language |
+| Playwright | Browser automation |
+| LangGraph | AI workflow |
+| Gemini 1.5 | Language model |
+
+---
+
+## 🔧 Installation
+
+```bash
+git clone https://github.com/nick2726/browsify.git
+cd browsify
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+
+Browser Autofy: Intelligent AI Web Agent
 
 **Browser Autofy** is an autonomous web research agent built with **LangGraph**, **Playwright**, and **Google Gemini 1.5 Flash**. 
 
