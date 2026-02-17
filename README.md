@@ -8,7 +8,7 @@ Unlike simple scrapers, this agent uses **Hybrid Intelligence** (Vision + Raw Te
 
 * **👁️ Hybrid Vision + Text Analysis:** The agent captures both screenshots (for layout context) and raw DOM text (for data precision) simultaneously, drastically reducing hallucinations.
 * **🧠 Autonomous Decision Making:** It uses a logic router to decide: *"Do I have the answer? Or should I scroll deeper?"* It features aggressive scrolling logic to bypass headers and intros.
-* **🛡️ Bulletproof Stability:** Built-in **Auto-Pacing** and **Smart Retry** wrappers ensure the agent runs smoothly on the Google Gemini Free Tier without crashing from `429 Rate Limit` errors.
+* **🛡️ Bulletproof Stability:** Built-in **Auto-Pacing** and **Smart Retry** wrappers ensure the agent runs smoothly on the Google Gemini Free Tier without crashing from errors.
 * **📝 Automated Reporting:** Aggregates findings from multiple scroll depths into a coherent `report.md` file.
 
 ## 🛠️ Tech Stack
